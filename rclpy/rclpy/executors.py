@@ -799,31 +799,36 @@ class MultiThreadedExecutor(Executor):
         self._futures = []
         self._executor = ThreadPoolExecutor(num_threads)
 
+    def _check_futures(self):
+        # make a copy of the list that we iterate over while modifying it
+        # (https://stackoverflow.com/q/1207406/3753684)
+        for future in self._futures[:]:
+            if future.done():
+                self._futures.remove(future)
+                future.result()  # re-raise any exceptions
+
     def _spin_once_impl(
         self,
         timeout_sec: Optional[float] = None,
         wait_condition: Callable[[], bool] = lambda: False
     ) -> None:
         try:
+            # Always timeout so we can check for exceptions
+            effective_timeout = 1.0 if timeout_sec is None else min(timeout_sec, 1.0)
             handler, entity, node = self.wait_for_ready_callbacks(
-                timeout_sec, None, wait_condition)
+                effective_timeout, None, wait_condition)
+        except TimeoutException:
+            self._check_futures()
         except ExternalShutdownException:
             pass
         except ShutdownException:
-            pass
-        except TimeoutException:
             pass
         except ConditionReachedException:
             pass
         else:
             self._executor.submit(handler)
             self._futures.append(handler)
-            # make a copy of the list that we iterate over while modifying it
-            # (https://stackoverflow.com/q/1207406/3753684)
-            for future in self._futures[:]:
-                if future.done():
-                    self._futures.remove(future)
-                    future.result()  # re-raise any exceptions
+            self._check_futures()
 
     def spin_once(self, timeout_sec: Optional[float] = None) -> None:
         self._spin_once_impl(timeout_sec)
